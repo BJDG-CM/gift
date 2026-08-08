@@ -1,0 +1,23 @@
+{
+  "name": "gifticon-keeper",
+  "version": "1.0.0",
+  "description": "기프티콘 유효기간 관리 앱",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "node --test webapp/notification-schedule.test.mjs",
+    "sync": "cap sync android",
+    "open:android": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.4.1",
+    "@capacitor/camera": "^8.2.1",
+    "@capacitor/core": "^8.4.1",
+    "@capacitor/local-notifications": "^8.2.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.1",
+    "vite": "^8.1.4"
+  }
+}

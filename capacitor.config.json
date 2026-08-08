@@ -1,0 +1,15 @@
+{
+  "appId": "com.gifticonkeeper.app",
+  "appName": "기프티콘 관리",
+  "webDir": "www",
+  "backgroundColor": "#EDE5DD",
+  "android": {
+    "backgroundColor": "#EDE5DD"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_notify",
+      "iconColor": "#FF7E5F"
+    }
+  }
+}
