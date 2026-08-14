@@ -134,6 +134,9 @@ async function pickPhoto() {
 /* ---------------- notifications ---------------- */
 const NOTIFICATION_CHANNEL_ID = 'gift-expiry-v2';
 const TEST_NOTIFICATION_ID = 999;
+// Android terminates the app when the 501st alarm is registered. Keep ample
+// headroom and clear the plugin's real pending list before rebuilding it.
+const MAX_PENDING_NOTIFICATIONS = 200;
 let notificationState = {
   kind: isNative ? 'checking' : 'web',
   message: isNative ? '알림 상태를 확인하고 있어요.' : '알림 상태는 Android 앱에서 확인할 수 있어요.',
@@ -177,12 +180,10 @@ async function performReschedule(requestPermission = false) {
   refreshNotificationStatus();
 
   try {
-    const cancelIds = [];
-    for (const it of items) {
-      if (it.notifBase == null) continue;
-      for (let i = 0; i < 40; i++) cancelIds.push({ id: it.notifBase + i });
+    const existingPending = await LocalNotifications.getPending();
+    if (existingPending.notifications.length) {
+      await LocalNotifications.cancel({ notifications: existingPending.notifications.map(({ id }) => ({ id })) });
     }
-    if (cancelIds.length) await LocalNotifications.cancel({ notifications: cancelIds });
 
     const active = activeItems();
     if (!active.length) {
@@ -230,18 +231,23 @@ async function performReschedule(requestPermission = false) {
     }
     saveSettings(settings);
     saveItems(items);
-    if (toSchedule.length) await LocalNotifications.schedule({ notifications: toSchedule });
+    toSchedule.sort((a, b) => a.schedule.at.getTime() - b.schedule.at.getTime());
+    const safeSchedule = toSchedule.slice(0, MAX_PENDING_NOTIFICATIONS);
+    if (safeSchedule.length) await LocalNotifications.schedule({ notifications: safeSchedule });
 
     const exactAlarm = isAndroid
       ? (await LocalNotifications.checkExactNotificationSetting()).exact_alarm
       : 'granted';
     const pending = await LocalNotifications.getPending();
-    const scheduledIds = new Set(toSchedule.map(notification => notification.id));
+    const scheduledIds = new Set(safeSchedule.map(notification => notification.id));
     const scheduled = pending.notifications.filter(notification => scheduledIds.has(notification.id)).length;
     const timingNote = exactAlarm === 'granted' ? '' : ' 정확 알람 권한을 켜면 절전 중에도 더 정확해요.';
+    const limitNote = toSchedule.length > safeSchedule.length
+      ? ` 가까운 순서로 최대 ${MAX_PENDING_NOTIFICATIONS}개만 예약했어요.`
+      : '';
     notificationState = {
       kind: exactAlarm === 'granted' ? 'ready' : 'warning',
-      message: scheduled > 0 ? `정상 · ${scheduled}개 예약됨.${timingNote}` : `알림 권한 정상 · 예약할 알림이 없어요.${timingNote}`,
+      message: scheduled > 0 ? `정상 · ${scheduled}개 예약됨.${limitNote}${timingNote}` : `알림 권한 정상 · 예약할 알림이 없어요.${timingNote}`,
       permission: 'granted',
       exactAlarm,
       scheduled
