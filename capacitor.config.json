@@ -2,6 +2,7 @@
   "appId": "com.gifticonkeeper.app",
   "appName": "기프티콘 관리",
   "webDir": "www",
+  "loggingBehavior": "none",
   "backgroundColor": "#EDE5DD",
   "android": {
     "backgroundColor": "#EDE5DD"

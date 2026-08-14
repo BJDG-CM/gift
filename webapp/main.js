@@ -1,10 +1,12 @@
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import { parseGiftText } from './gift-text-parser.mjs';
 import { TIER_META, TIER_OPTIONS, buildScheduleDates, daysUntilExpiryOn } from './notification-schedule.mjs';
 
 const isNative = Capacitor.isNativePlatform();
 const isAndroid = Capacitor.getPlatform() === 'android';
+const GiftOcr = registerPlugin('GiftOcr');
 
 /* ---------------- storage ---------------- */
 const ITEMS_KEY = 'gk_items_v1';
@@ -72,6 +74,12 @@ function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+function listPhotoPlaceholder(it) {
+  return it.photo
+    ? '<span class="stored-photo-mark" aria-label="사진 저장됨">🖼️</span>'
+    : '<span aria-hidden="true">🎁</span>';
+}
+
 /* ---------------- theme ---------------- */
 function applyTheme() {
   const [a, soft, ink] = THEMES[settings.theme] || THEMES[0];
@@ -90,7 +98,7 @@ function expiringSoonCount(maxDays) {
 }
 
 /* ---------------- image helper ---------------- */
-function compressImage(dataUrl, maxDim = 900, quality = 0.72) {
+function compressImage(dataUrl, maxDim = 960, quality = 0.76) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -135,10 +143,11 @@ let notificationState = {
 };
 let rescheduleQueue = Promise.resolve();
 
-async function ensureNotifPermission() {
+async function ensureNotifPermission(requestIfNeeded = false) {
   if (!isNative) return true;
   const current = await LocalNotifications.checkPermissions();
   if (current.display === 'granted') return true;
+  if (!requestIfNeeded) return false;
   const requested = await LocalNotifications.requestPermissions();
   return requested.display === 'granted';
 }
@@ -162,7 +171,7 @@ function refreshNotificationStatus() {
   if (card) card.dataset.kind = notificationState.kind;
 }
 
-async function performReschedule() {
+async function performReschedule(requestPermission = false) {
   if (!isNative) return;
   notificationState = { ...notificationState, kind: 'checking', message: '알림을 다시 예약하고 있어요.' };
   refreshNotificationStatus();
@@ -175,7 +184,18 @@ async function performReschedule() {
     }
     if (cancelIds.length) await LocalNotifications.cancel({ notifications: cancelIds });
 
-    const permitted = await ensureNotifPermission();
+    const active = activeItems();
+    if (!active.length) {
+      notificationState = {
+        ...notificationState,
+        kind: 'ready',
+        message: '등록된 기프티콘이 생기면 알림을 예약해 드려요.',
+        scheduled: 0
+      };
+      return;
+    }
+
+    const permitted = await ensureNotifPermission(requestPermission);
     if (!permitted) {
       notificationState = {
         kind: 'blocked',
@@ -239,13 +259,14 @@ async function performReschedule() {
   }
 }
 
-function rescheduleAll() {
-  rescheduleQueue = rescheduleQueue.then(performReschedule, performReschedule);
+function rescheduleAll(requestPermission = false) {
+  const schedule = () => performReschedule(requestPermission);
+  rescheduleQueue = rescheduleQueue.then(schedule, schedule);
   return rescheduleQueue;
 }
 
 async function sendTestNotification() {
-  const permitted = await ensureNotifPermission();
+  const permitted = await ensureNotifPermission(true);
   if (!permitted) throw new Error('알림 권한이 필요해요.');
   await ensureNotificationChannel();
   await LocalNotifications.schedule({
@@ -270,6 +291,7 @@ function go(path) { location.hash = path; }
 
 /* ---------------- rendering ---------------- */
 const app = document.getElementById('app');
+let suppressAddUntil = 0;
 
 function render() {
   applyTheme();
@@ -308,12 +330,29 @@ function renderNav(active) {
 }
 
 /* ---- home ---- */
+let homeQuery = '';
+let homeCategory = '전체';
+let homeSort = 'expiry';
+
+function visibleHomeItems() {
+  const query = homeQuery.trim().toLocaleLowerCase('ko');
+  const filtered = activeItems().filter(it => {
+    const categoryMatches = homeCategory === '전체' || it.category === homeCategory;
+    const queryMatches = !query || [it.name, it.brand, it.category, it.memo]
+      .some(value => String(value || '').toLocaleLowerCase('ko').includes(query));
+    return categoryMatches && queryMatches;
+  });
+  return filtered.sort((a, b) => homeSort === 'added'
+    ? (b.createdAt || 0) - (a.createdAt || 0)
+    : daysLeft(a.expiry) - daysLeft(b.expiry));
+}
+
 function renderHome() {
-  const list = sortedActive();
+  const list = visibleHomeItems();
   const soonCount = expiringSoonCount(3);
-  const name = escapeHtml(settings.userName || '');
+  const isFiltering = Boolean(homeQuery.trim()) || homeCategory !== '전체';
   const banner = soonCount > 0 ? `
-    <button class="alert-banner" data-nav="urgent" style="border:none;width:calc(100% - 40px);">
+    <button class="alert-banner" data-nav="urgent">
       <span class="badge">${soonCount}</span>
       <div style="flex:1;text-align:left;">
         <div class="t1">3일 안에 만료되는 게 ${soonCount}개 있어요</div>
@@ -325,9 +364,10 @@ function renderHome() {
   let body;
   if (list.length === 0) {
     body = `<div class="empty-state">
-      <div class="e-icon">🎁</div>
-      <div class="e-title">등록된 기프티콘이 없어요</div>
-      <div class="e-sub">+ 버튼을 눌러 첫 기프티콘을 등록해보세요</div>
+      <div class="e-icon">${isFiltering ? '🔎' : '🎁'}</div>
+      <div class="e-title">${isFiltering ? '조건에 맞는 기프티콘이 없어요' : '등록된 기프티콘이 없어요'}</div>
+      <div class="e-sub">${isFiltering ? '검색어나 필터를 바꿔보세요' : '가운데 + 버튼으로 첫 기프티콘을 등록해보세요'}</div>
+      ${isFiltering ? '<button class="empty-reset" id="clearHomeFilters">필터 초기화</button>' : ''}
     </div>`;
   } else if (settings.viewMode === 'grid') {
     body = `<div class="item-grid" style="margin-top:14px;">${list.map(gridCard).join('')}</div>`;
@@ -346,12 +386,27 @@ function renderHome() {
   }
 
   return `<div class="topbar">
-      <div><div class="greet">안녕하세요 👋</div><h1>내 기프티콘 <span>${activeItems().length}</span></h1></div>
+      <div><div class="greet">오늘도 놓치지 않게</div><h1>내 기프티콘 <span>${activeItems().length}</span></h1></div>
       <div class="icon-row">
-        <button class="icon-btn" data-toggle-view>${settings.viewMode === 'grid' ? '☰' : '▦'}</button>
+        <button class="icon-btn" data-toggle-view aria-label="${settings.viewMode === 'grid' ? '리스트로 보기' : '그리드로 보기'}">${settings.viewMode === 'grid' ? '☰' : '▦'}</button>
       </div>
     </div>
     ${banner}
+    <div class="home-tools">
+      <div class="search-box">
+        <span aria-hidden="true">⌕</span>
+        <input id="homeSearch" type="search" value="${escapeHtml(homeQuery)}" placeholder="상품명, 브랜드, 메모 검색" aria-label="기프티콘 검색">
+        ${homeQuery ? '<button id="clearSearch" aria-label="검색어 지우기">×</button>' : ''}
+      </div>
+      <select id="homeSort" class="sort-select" aria-label="정렬 방식">
+        <option value="expiry" ${homeSort === 'expiry' ? 'selected' : ''}>만료 임박순</option>
+        <option value="added" ${homeSort === 'added' ? 'selected' : ''}>최근 등록순</option>
+      </select>
+    </div>
+    <div class="chip-row home-filters">
+      ${['전체', ...CATEGORIES].map(category => `<button class="chip ${homeCategory === category ? 'active' : ''}" data-home-category="${category}">${category}</button>`).join('')}
+    </div>
+    <div class="result-summary"><span>${isFiltering ? `검색 결과 ${list.length}개` : `사용 가능한 ${list.length}개`}</span></div>
     <div class="scroll" style="padding-bottom:20px;">${body}</div>`;
 }
 
@@ -359,7 +414,7 @@ function listRow(it) {
   const dl = daysLeft(it.expiry);
   const uc = urgencyClass(dl);
   return `<button class="item-row" data-nav="detail/${it.id}">
-    <div class="item-thumb">${it.photo ? `<img src="${it.photo}">` : '🎁'}</div>
+    <div class="item-thumb">${listPhotoPlaceholder(it)}</div>
     <div class="item-info">
       <div class="item-brand">${escapeHtml(it.category)}${it.brand ? ' · ' + escapeHtml(it.brand) : ''}</div>
       <div class="item-name">${escapeHtml(it.name)}</div>
@@ -374,7 +429,7 @@ function gridCard(it) {
   const uc = urgencyClass(dl);
   return `<button class="grid-card" data-nav="detail/${it.id}">
     <div class="grid-thumb">
-      ${it.photo ? `<img src="${it.photo}">` : '🎁'}
+      ${listPhotoPlaceholder(it)}
       <span class="grid-badge ${uc}">${ddayLabel(dl)}</span>
     </div>
     <div class="grid-body">
@@ -408,7 +463,7 @@ function renderUrgent() {
         const borderColor = uc === 'urgent' ? '#ED5E4C' : uc === 'soon' ? '#E0982F' : '#5FA97E';
         const textColor = uc === 'urgent' || uc === 'soon' ? (uc === 'urgent' ? '#D8442F' : '#B87A1E') : '#3F8F5F';
         return `<button class="urgent-row" style="border-left:5px solid ${borderColor};" data-nav="detail/${it.id}">
-          <div class="item-thumb">${it.photo ? `<img src="${it.photo}">` : '🎁'}</div>
+          <div class="item-thumb">${listPhotoPlaceholder(it)}</div>
           <div style="flex:1;min-width:0;">
             <div class="item-brand">${escapeHtml(it.brand || it.category)}</div>
             <div class="item-name">${escapeHtml(it.name)}</div>
@@ -421,36 +476,121 @@ function renderUrgent() {
 }
 
 /* ---- add ---- */
-let addPhoto = null;
+function emptyAddDraft() {
+  return {
+    name: '',
+    brand: '',
+    expiry: '',
+    category: CATEGORIES[0],
+    categoryTouched: false,
+    memo: '',
+    photo: null,
+    ocrState: 'idle',
+    ocrMessage: '',
+    error: ''
+  };
+}
+
+let addDraft = null;
+let addSaving = false;
+
+function ensureAddDraft() {
+  if (!addDraft) addDraft = emptyAddDraft();
+  return addDraft;
+}
+
+function syncAddDraftFromForm() {
+  if (!addDraft) return;
+  const read = id => app.querySelector(id)?.value ?? '';
+  addDraft.name = read('#f-name');
+  addDraft.brand = read('#f-brand');
+  addDraft.expiry = read('#f-expiry');
+  addDraft.memo = read('#f-memo');
+}
+
+function draftHasContent() {
+  return Boolean(addDraft && (addDraft.name.trim() || addDraft.brand.trim() || addDraft.expiry || addDraft.memo.trim() || addDraft.photo));
+}
+
+async function analyzeAddPhoto() {
+  if (!addDraft?.photo) return;
+  if (!isAndroid) {
+    addDraft.ocrState = 'unavailable';
+    addDraft.ocrMessage = '자동 읽기는 Android 앱에서 사용할 수 있어요.';
+    render();
+    return;
+  }
+
+  addDraft.ocrState = 'scanning';
+  addDraft.ocrMessage = '사진에서 상품명과 유효기간을 읽고 있어요…';
+  render();
+  try {
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('OCR_TIMEOUT')), 15000));
+    const result = await Promise.race([GiftOcr.recognize({ dataUrl: addDraft.photo }), timeout]);
+    const parsed = parseGiftText(result.text);
+    let applied = 0;
+    if (!addDraft.name.trim() && parsed.name) { addDraft.name = parsed.name; applied += 1; }
+    if (!addDraft.brand.trim() && parsed.brand) { addDraft.brand = parsed.brand; applied += 1; }
+    if (!addDraft.expiry && parsed.expiry) { addDraft.expiry = parsed.expiry; applied += 1; }
+    if (!addDraft.categoryTouched && parsed.category !== '기타') { addDraft.category = parsed.category; applied += 1; }
+    addDraft.ocrState = applied ? 'success' : 'empty';
+    addDraft.ocrMessage = applied
+      ? `${applied}개 항목을 자동으로 채웠어요. 저장 전에 한 번 확인해 주세요.`
+      : '읽은 내용에서 채울 정보를 찾지 못했어요. 직접 입력해 주세요.';
+  } catch (error) {
+    console.error('OCR failed', error);
+    addDraft.ocrState = 'error';
+    const modelPreparing = error?.code === 'OCR_MODEL_DOWNLOADING'
+      || String(error?.message || '').includes('OCR 모델을 준비 중');
+    addDraft.ocrMessage = modelPreparing
+      ? 'OCR 모델을 준비 중이에요. 인터넷에 연결한 상태에서 잠시 후 다시 읽어 주세요.'
+      : '사진을 자동으로 읽지 못했어요. 선명한 이미지로 다시 시도해 주세요.';
+  }
+  render();
+}
+
 function renderAdd() {
-  addPhoto = addPhoto || null;
+  const draft = ensureAddDraft();
   const cats = CATEGORIES;
   return `<div class="subhead-row">
-      <button class="back-btn" data-nav="home">‹</button>
+      <button class="back-btn" data-cancel-add aria-label="등록 취소">‹</button>
       <span class="page-title" style="flex:1;">새 기프티콘</span>
-      <button class="back-btn" data-nav="home" style="font-size:14px;font-weight:700;color:var(--faint);width:auto;">취소</button>
+      <button class="text-btn" data-cancel-add>취소</button>
     </div>
     <div class="scroll">
       <div class="form-wrap">
-        <div class="photo-picker" id="photoPicker">
-          ${addPhoto ? `<img src="${addPhoto}"><button type="button" class="photo-remove" id="removePhoto">✕</button>` : `
+        <div class="form-intro"><strong>사진 한 장이면 더 빨라요</strong><span>상품명과 유효기간을 자동으로 찾아드려요.</span></div>
+        <div class="photo-card ${draft.photo ? 'has-photo' : ''}">
+          <button type="button" class="photo-picker" id="photoPicker" aria-label="기프티콘 사진 선택">
+          ${draft.photo ? `<img src="${draft.photo}" alt="선택한 기프티콘">` : `
             <div class="pp-icon">📷</div>
             <div class="pp-t1">사진 촬영 또는 앨범에서 선택</div>
-            <div class="pp-t2">기프티콘 이미지를 저장해 두어요</div>`}
+            <div class="pp-t2">이미지는 기기 안에만 저장돼요</div>`}
+          </button>
+          ${draft.photo ? `<div class="photo-actions">
+            <button type="button" id="replacePhoto">사진 바꾸기</button>
+            <button type="button" id="removePhoto">사진 삭제</button>
+          </div>` : ''}
         </div>
-        <div class="field"><label>상품명</label><input type="text" id="f-name" placeholder="예: 아이스 아메리카노 T"></div>
+        ${draft.ocrState !== 'idle' ? `<div class="ocr-status ${draft.ocrState}" role="status" aria-live="polite">
+          <span class="ocr-status-icon">${draft.ocrState === 'scanning' ? '<span class="spinner"></span>' : draft.ocrState === 'success' ? '✓' : 'i'}</span>
+          <span>${escapeHtml(draft.ocrMessage)}</span>
+          ${draft.photo && draft.ocrState !== 'scanning' && isAndroid ? `<button type="button" id="runOcr">${draft.ocrState === 'ready' ? '자동 입력' : '다시 읽기'}</button>` : ''}
+        </div>` : ''}
+        ${draft.error ? `<div class="form-error" role="alert">${escapeHtml(draft.error)}</div>` : ''}
+        <div class="field"><label for="f-name">상품명 <em>필수</em></label><input type="text" id="f-name" value="${escapeHtml(draft.name)}" placeholder="예: 아이스 아메리카노 T" autocomplete="off"></div>
         <div class="field-row">
-          <div class="field"><label>브랜드</label><input type="text" id="f-brand" placeholder="예: 스타벅스"></div>
-          <div class="field"><label>유효기간</label><input type="date" id="f-expiry"></div>
+          <div class="field"><label for="f-brand">브랜드</label><input type="text" id="f-brand" value="${escapeHtml(draft.brand)}" placeholder="예: 스타벅스" autocomplete="off"></div>
+          <div class="field"><label for="f-expiry">유효기간 <em>필수</em></label><input type="date" id="f-expiry" value="${escapeHtml(draft.expiry)}"></div>
         </div>
         <div class="field">
           <label>카테고리</label>
-          <div class="cat-grid">${cats.map((c, i) => `<button type="button" class="cat-chip ${i === 0 ? 'active' : ''}" data-cat="${c}">${c}</button>`).join('')}</div>
+          <div class="cat-grid">${cats.map(c => `<button type="button" class="cat-chip ${draft.category === c ? 'active' : ''}" data-cat="${c}">${c}</button>`).join('')}</div>
         </div>
-        <div class="field"><label>메모 (선택)</label><textarea id="f-memo" placeholder="예: 엄마 생일선물 🎁"></textarea></div>
+        <div class="field"><label for="f-memo">메모 <span>(선택)</span></label><textarea id="f-memo" placeholder="받은 사람이나 사용 계획을 적어두세요">${escapeHtml(draft.memo)}</textarea></div>
       </div>
     </div>
-    <div class="form-footer"><button class="primary-btn" id="saveBtn">등록하기</button></div>`;
+    <div class="form-footer"><button class="primary-btn" id="saveBtn" ${addSaving ? 'disabled' : ''}>${addSaving ? '등록 중…' : '기프티콘 등록'}</button></div>`;
 }
 
 /* ---- detail ---- */
@@ -470,7 +610,7 @@ function renderDetail(id) {
         <button class="menu-btn" id="menuBtn">⋯</button>
       </div>
       <div class="detail-photo-wrap">
-        <div class="detail-photo">${it.photo ? `<img src="${it.photo}">` : '🎁'}</div>
+        <div class="detail-photo">${it.photo ? `<img src="${it.photo}" decoding="async">` : '🎁'}</div>
       </div>
       <div class="detail-spacer"></div>
     </div>
@@ -508,7 +648,7 @@ function renderPresent(id) {
     </div>
     <div class="present-mid">
       <div class="present-name"><div class="b">${escapeHtml(it.category)}${it.brand ? ' · ' + escapeHtml(it.brand) : ''}</div><div class="n">${escapeHtml(it.name)}</div></div>
-      <div class="present-photo">${it.photo ? `<img src="${it.photo}">` : `<div class="ph-empty">이미지 없음</div>`}</div>
+      <div class="present-photo">${it.photo ? `<img src="${it.photo}" decoding="async">` : `<div class="ph-empty">이미지 없음</div>`}</div>
       <div class="present-note">직원에게 화면을 보여주세요<br>스캔이 끝나면 아래 버튼을 눌러요</div>
     </div>
     <button class="primary-btn" style="background:#302823;" id="doneBtn">사용완료로 표시</button>
@@ -529,7 +669,7 @@ function renderArchive() {
     <div class="scroll" style="padding:14px 20px 20px;display:flex;flex-direction:column;gap:10px;">
       ${list.length ? list.map(it => `
         <button class="archive-row" data-nav="detail/${it.id}">
-          <div class="archive-thumb">${it.photo ? `<img src="${it.photo}">` : ''}${it.status === 'used' ? '<div class="check">✓</div>' : ''}</div>
+          <div class="archive-thumb">${listPhotoPlaceholder(it)}${it.status === 'used' ? '<div class="check">✓</div>' : ''}</div>
           <div style="flex:1;min-width:0;">
             <div class="archive-brand">${escapeHtml(it.brand || it.category)}</div>
             <div class="archive-name">${escapeHtml(it.name)}</div>
@@ -591,50 +731,126 @@ function renderSettings() {
 /* ---------------- event handlers ---------------- */
 function attachHandlers(routeName, arg) {
   app.querySelectorAll('[data-nav]').forEach(el => {
-    el.addEventListener('click', () => go('/' + el.getAttribute('data-nav')));
+    el.addEventListener('click', () => {
+      const target = el.getAttribute('data-nav');
+      if (target === 'add' && performance.now() < suppressAddUntil) return;
+      go('/' + target);
+    });
   });
 
   if (routeName === 'home') {
     const t = app.querySelector('[data-toggle-view]');
     if (t) t.addEventListener('click', () => { settings.viewMode = settings.viewMode === 'grid' ? 'list' : 'grid'; saveSettings(settings); render(); });
+    const search = app.querySelector('#homeSearch');
+    if (search) search.addEventListener('input', () => {
+      homeQuery = search.value;
+      render();
+      const nextSearch = app.querySelector('#homeSearch');
+      nextSearch?.focus();
+      nextSearch?.setSelectionRange(homeQuery.length, homeQuery.length);
+    });
+    app.querySelector('#clearSearch')?.addEventListener('click', () => { homeQuery = ''; render(); app.querySelector('#homeSearch')?.focus(); });
+    app.querySelector('#homeSort')?.addEventListener('change', event => { homeSort = event.target.value; render(); });
+    app.querySelectorAll('[data-home-category]').forEach(el => {
+      el.addEventListener('click', () => { homeCategory = el.getAttribute('data-home-category'); render(); });
+    });
+    app.querySelector('#clearHomeFilters')?.addEventListener('click', () => { homeQuery = ''; homeCategory = '전체'; render(); });
   }
 
   if (routeName === 'add') {
-    let selectedCat = CATEGORIES[0];
+    ensureAddDraft();
+    app.querySelectorAll('[data-cancel-add]').forEach(el => {
+      el.addEventListener('click', () => {
+        syncAddDraftFromForm();
+        if (draftHasContent() && !confirm('작성 중인 내용을 지우고 나갈까요?')) return;
+        addDraft = null;
+        addSaving = false;
+        go('/home');
+      });
+    });
+    ['#f-name', '#f-brand', '#f-expiry', '#f-memo'].forEach(selector => {
+      app.querySelector(selector)?.addEventListener('input', () => {
+        syncAddDraftFromForm();
+        addDraft.error = '';
+      });
+    });
     app.querySelectorAll('.cat-chip').forEach(el => {
       el.addEventListener('click', () => {
-        selectedCat = el.getAttribute('data-cat');
+        addDraft.category = el.getAttribute('data-cat');
+        addDraft.categoryTouched = true;
         app.querySelectorAll('.cat-chip').forEach(c => c.classList.toggle('active', c === el));
       });
     });
-    const picker = app.querySelector('#photoPicker');
-    if (picker) picker.addEventListener('click', async (e) => {
-      if (e.target.id === 'removePhoto') return;
+    const choosePhoto = async () => {
+      syncAddDraftFromForm();
       const photo = await pickPhoto();
-      if (photo) { addPhoto = photo; render(); }
-    });
+      if (!photo) return;
+      addDraft.photo = photo;
+      addDraft.ocrState = isAndroid ? 'ready' : 'unavailable';
+      addDraft.ocrMessage = isAndroid
+        ? '원할 때 자동 입력을 눌러 상품명과 유효기간을 읽을 수 있어요.'
+        : '자동 읽기는 Android 앱에서 사용할 수 있어요.';
+      render();
+    };
+    app.querySelector('#photoPicker')?.addEventListener('click', choosePhoto);
+    app.querySelector('#replacePhoto')?.addEventListener('click', choosePhoto);
     const removeBtn = app.querySelector('#removePhoto');
-    if (removeBtn) removeBtn.addEventListener('click', (e) => { e.stopPropagation(); addPhoto = null; render(); });
+    if (removeBtn) removeBtn.addEventListener('click', () => {
+      syncAddDraftFromForm();
+      addDraft.photo = null;
+      addDraft.ocrState = 'idle';
+      addDraft.ocrMessage = '';
+      render();
+    });
+    app.querySelector('#runOcr')?.addEventListener('click', async () => {
+      syncAddDraftFromForm();
+      await analyzeAddPhoto();
+    });
 
     app.querySelector('#saveBtn').addEventListener('click', async () => {
-      const name = app.querySelector('#f-name').value.trim();
-      const expiry = app.querySelector('#f-expiry').value;
-      if (!name || !expiry) { alert('상품명과 유효기간을 입력해주세요.'); return; }
-      const brand = app.querySelector('#f-brand').value.trim();
-      const memo = app.querySelector('#f-memo').value.trim();
-      items.push({
-        id: 'g' + Date.now() + Math.floor(Math.random() * 1000),
-        name, brand, memo,
-        category: selectedCat,
+      if (addSaving) return;
+      syncAddDraftFromForm();
+      const name = addDraft.name.trim();
+      const expiry = addDraft.expiry;
+      if (!name || !expiry) {
+        addDraft.error = !name && !expiry ? '상품명과 유효기간을 입력해 주세요.' : !name ? '상품명을 입력해 주세요.' : '유효기간을 입력해 주세요.';
+        render();
+        app.querySelector(!name ? '#f-name' : '#f-expiry')?.focus();
+        return;
+      }
+
+      addSaving = true;
+      const button = app.querySelector('#saveBtn');
+      if (button) { button.disabled = true; button.textContent = '등록 중…'; }
+      const createdAt = Date.now();
+      const item = {
+        id: globalThis.crypto?.randomUUID?.() || `g${createdAt}${Math.floor(Math.random() * 1000)}`,
+        name,
+        brand: addDraft.brand.trim(),
+        memo: addDraft.memo.trim(),
+        category: addDraft.category,
         expiry,
-        photo: addPhoto,
+        photo: addDraft.photo,
         status: 'active',
-        createdAt: Date.now()
-      });
-      saveItems(items);
-      addPhoto = null;
-      await rescheduleAll();
-      go('/home');
+        createdAt
+      };
+
+      try {
+        items.push(item);
+        saveItems(items);
+        addDraft = null;
+        suppressAddUntil = performance.now() + 700;
+        go('/home');
+        void rescheduleAll(true);
+      } catch (error) {
+        items = items.filter(existing => existing.id !== item.id);
+        addSaving = false;
+        addDraft = { ...emptyAddDraft(), ...item, error: '저장하지 못했어요. 저장 공간을 확인한 뒤 다시 시도해 주세요.' };
+        console.error('Failed to save item', error);
+        render();
+      } finally {
+        if (!addDraft) addSaving = false;
+      }
     });
   }
 
@@ -662,7 +878,7 @@ function attachHandlers(routeName, arg) {
     if (restoreBtn) restoreBtn.addEventListener('click', async () => {
       it.status = 'active';
       saveItems(items);
-      await rescheduleAll();
+      await rescheduleAll(true);
       go('/home');
     });
   }
@@ -690,7 +906,7 @@ function attachHandlers(routeName, arg) {
       if (notificationState.permission === 'granted' && notificationState.exactAlarm === 'denied' && isAndroid) {
         await LocalNotifications.changeExactNotificationSetting();
       }
-      await rescheduleAll();
+      await rescheduleAll(true);
       render();
     });
     const testNotifBtn = app.querySelector('#testNotifBtn');
@@ -705,7 +921,7 @@ function attachHandlers(routeName, arg) {
       el.addEventListener('click', async () => {
         settings.tiers[el.getAttribute('data-tier')] = el.getAttribute('data-freq');
         saveSettings(settings);
-        await rescheduleAll();
+        await rescheduleAll(true);
         render();
       });
     });
@@ -713,7 +929,7 @@ function attachHandlers(routeName, arg) {
     if (timeInput) timeInput.addEventListener('change', async () => {
       settings.notifyTime = timeInput.value;
       saveSettings(settings);
-      await rescheduleAll();
+      await rescheduleAll(true);
     });
     app.querySelectorAll('[data-view]').forEach(el => {
       el.addEventListener('click', () => { settings.viewMode = el.getAttribute('data-view'); saveSettings(settings); render(); });
@@ -746,4 +962,4 @@ function sweepExpired() {
 /* ---------------- init ---------------- */
 sweepExpired();
 render();
-rescheduleAll();
+rescheduleAll(false);

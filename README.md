@@ -7,7 +7,7 @@
     <a href="#요구-사항"><img src="https://img.shields.io/badge/Android-API%2024%2B-3DDC84?logo=android&amp;logoColor=white" alt="Android API 24+" /></a>
     <a href="https://capacitorjs.com/"><img src="https://img.shields.io/badge/Capacitor-8.4-119EFF?logo=capacitor&amp;logoColor=white" alt="Capacitor 8.4" /></a>
     <a href="./webapp"><img src="https://img.shields.io/badge/JavaScript-ES%20Modules-F7DF1E?logo=javascript&amp;logoColor=111" alt="JavaScript ES Modules" /></a>
-    <a href="./package.json"><img src="https://img.shields.io/badge/version-1.0.0-FF7E5F" alt="Version 1.0.0" /></a>
+    <a href="./package.json"><img src="https://img.shields.io/badge/version-1.1.1-FF7E5F" alt="Version 1.1.1" /></a>
   </p>
 </div>
 
@@ -18,6 +18,7 @@
 | 기능 | 설명 |
 | --- | --- |
 | 빠른 기프티콘 등록 | 카메라 또는 앨범에서 이미지를 추가하고 상품명, 브랜드, 유효기간, 카테고리, 메모를 함께 저장합니다. |
+| 사진 자동 입력 | Android 온디바이스 OCR로 사진의 한국어·영문을 읽고 상품명, 브랜드, 유효기간, 카테고리를 제안합니다. |
 | 단계별 만료 알림 | 만료일까지 남은 기간에 따라 알림 빈도를 자동으로 높이고, 원하는 시간과 주기를 직접 설정할 수 있습니다. |
 | 안정적인 Android 알림 | 알림 권한과 정확 알람 상태를 확인하고, 절전 모드와 기기 재부팅 이후에도 예약을 유지합니다. |
 | 임박 항목 집중 관리 | D-day 순으로 정렬하고 3일·7일·30일 이내 만료 항목을 한눈에 확인합니다. |
@@ -63,7 +64,7 @@
 - UI: HTML, CSS, JavaScript ES Modules
 - Web build: Vite 8
 - Native runtime: Capacitor 8
-- Android plugins: Camera, Local Notifications
+- Android plugins: Camera, Local Notifications, Google Play services ML Kit Korean Text Recognition
 - Storage: WebView Local Storage
 - Android 지원 범위: API 24 이상
 
