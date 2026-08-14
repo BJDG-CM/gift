@@ -74,10 +74,17 @@ function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+function categoryGlyph(category) {
+  return ({ 카페: '☕', 편의점: '◇', 치킨: '♨', 디저트: '✦', 뷰티: '◌', 기타: '⌁' })[category] || '✦';
+}
+
 function listPhotoPlaceholder(it) {
-  return it.photo
-    ? '<span class="stored-photo-mark" aria-label="사진 저장됨">🖼️</span>'
-    : '<span aria-hidden="true">🎁</span>';
+  const label = it.photo ? `${it.name} 기프티콘 사진` : `${it.category || '기프티콘'} 기본 커버`;
+  return `<span class="gift-art ${it.photo ? 'has-photo' : ''}" aria-label="${escapeHtml(label)}">
+    <span class="gift-art-fallback" aria-hidden="true"><b>${categoryGlyph(it.category)}</b><small>${escapeHtml(it.brand || it.category || 'GIFT')}</small></span>
+    ${it.photo ? `<img src="${it.photo}" alt="" loading="lazy" decoding="async" onerror="this.hidden=true">` : ''}
+    <span class="gift-art-shine" aria-hidden="true"></span>
+  </span>`;
 }
 
 /* ---------------- theme ---------------- */
@@ -313,26 +320,36 @@ function render() {
   else if (name === 'present') { html = renderPresent(arg); showNav = false; }
   else html = renderHome();
 
-  app.innerHTML = `<div class="screen">${html}</div>${showNav ? renderNav(name) : ''}`;
+  app.innerHTML = `<main class="screen ${showNav ? 'screen-with-nav' : 'screen-full'}">${html}</main>${showNav ? renderNav(name) : ''}`;
   attachHandlers(name, arg);
+}
+
+function navIcon(key) {
+  const icons = {
+    home: '<path d="M3.5 10.5 12 3l8.5 7.5"/><path d="M5.5 9.5V21h13V9.5M9.5 21v-6h5v6"/>',
+    urgent: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4.5l3 2M8 3.5 6 5M16 3.5 18 5"/>',
+    archive: '<path d="M4 7h16v13H4zM3 4h18v4H3zM9 11h6"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/>'
+  };
+  return `<svg viewBox="0 0 24 24" aria-hidden="true">${icons[key]}</svg>`;
 }
 
 function renderNav(active) {
   const items = [
-    { key: 'home', icon: '🏠', label: '홈' },
-    { key: 'urgent', icon: '⏰', label: '임박' },
-    { key: 'fab', icon: '+', label: '' },
-    { key: 'archive', icon: '🗂️', label: '보관함' },
-    { key: 'settings', icon: '⚙️', label: '설정' }
+    { key: 'home', label: '홈' },
+    { key: 'urgent', label: '임박' },
+    { key: 'fab', label: '추가' },
+    { key: 'archive', label: '보관함' },
+    { key: 'settings', label: '설정' }
   ];
-  return `<div class="bottom-nav">
+  return `<nav class="bottom-nav" aria-label="주요 메뉴">
     ${items.map(it => {
-      if (it.key === 'fab') return `<button class="nav-fab" data-nav="add">+</button>`;
-      return `<button class="nav-item ${active === it.key ? 'active' : ''}" data-nav="${it.key}">
-        <span class="ic">${it.icon}</span>${it.label}
+      if (it.key === 'fab') return `<button class="nav-fab" data-nav="add" aria-label="새 기프티콘 추가"><span>+</span><small>${it.label}</small></button>`;
+      return `<button class="nav-item ${active === it.key ? 'active' : ''}" data-nav="${it.key}" ${active === it.key ? 'aria-current="page"' : ''}>
+        <span class="ic">${navIcon(it.key)}</span><span>${it.label}</span>
       </button>`;
     }).join('')}
-  </div>`;
+  </nav>`;
 }
 
 /* ---- home ---- */
@@ -394,13 +411,17 @@ function renderHome() {
   return `<div class="topbar">
       <div><div class="greet">오늘도 놓치지 않게</div><h1>내 기프티콘 <span>${activeItems().length}</span></h1></div>
       <div class="icon-row">
-        <button class="icon-btn" data-toggle-view aria-label="${settings.viewMode === 'grid' ? '리스트로 보기' : '그리드로 보기'}">${settings.viewMode === 'grid' ? '☰' : '▦'}</button>
+        <button class="icon-btn" data-toggle-view aria-label="${settings.viewMode === 'grid' ? '리스트로 보기' : '그리드로 보기'}">
+          ${settings.viewMode === 'grid'
+            ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>'
+            : '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>'}
+        </button>
       </div>
     </div>
     ${banner}
     <div class="home-tools">
       <div class="search-box">
-        <span aria-hidden="true">⌕</span>
+        <span aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></svg></span>
         <input id="homeSearch" type="search" value="${escapeHtml(homeQuery)}" placeholder="상품명, 브랜드, 메모 검색" aria-label="기프티콘 검색">
         ${homeQuery ? '<button id="clearSearch" aria-label="검색어 지우기">×</button>' : ''}
       </div>
@@ -413,7 +434,7 @@ function renderHome() {
       ${['전체', ...CATEGORIES].map(category => `<button class="chip ${homeCategory === category ? 'active' : ''}" data-home-category="${category}">${category}</button>`).join('')}
     </div>
     <div class="result-summary"><span>${isFiltering ? `검색 결과 ${list.length}개` : `사용 가능한 ${list.length}개`}</span></div>
-    <div class="scroll" style="padding-bottom:20px;">${body}</div>`;
+    <div class="scroll home-scroll">${body}</div>`;
 }
 
 function listRow(it) {

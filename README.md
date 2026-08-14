@@ -7,7 +7,7 @@
     <a href="#요구-사항"><img src="https://img.shields.io/badge/Android-API%2024%2B-3DDC84?logo=android&amp;logoColor=white" alt="Android API 24+" /></a>
     <a href="https://capacitorjs.com/"><img src="https://img.shields.io/badge/Capacitor-8.4-119EFF?logo=capacitor&amp;logoColor=white" alt="Capacitor 8.4" /></a>
     <a href="./webapp"><img src="https://img.shields.io/badge/JavaScript-ES%20Modules-F7DF1E?logo=javascript&amp;logoColor=111" alt="JavaScript ES Modules" /></a>
-    <a href="./package.json"><img src="https://img.shields.io/badge/version-1.1.3-FF7E5F" alt="Version 1.1.3" /></a>
+    <a href="./package.json"><img src="https://img.shields.io/badge/version-1.2.0-FF7E5F" alt="Version 1.2.0" /></a>
   </p>
 </div>
 
