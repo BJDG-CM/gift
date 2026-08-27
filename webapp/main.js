@@ -314,6 +314,7 @@ function render() {
   if (name === 'home') html = renderHome();
   else if (name === 'urgent') html = renderUrgent();
   else if (name === 'add') { html = renderAdd(); showNav = false; }
+  else if (name === 'edit') { html = renderEdit(arg); showNav = false; }
   else if (name === 'detail') { html = renderDetail(arg); showNav = false; }
   else if (name === 'archive') html = renderArchive();
   else if (name === 'settings') html = renderSettings();
@@ -526,67 +527,66 @@ function ensureAddDraft() {
   return addDraft;
 }
 
-function syncAddDraftFromForm() {
-  if (!addDraft) return;
+function syncDraftFromForm(draft) {
+  if (!draft) return;
   const read = id => app.querySelector(id)?.value ?? '';
-  addDraft.name = read('#f-name');
-  addDraft.brand = read('#f-brand');
-  addDraft.expiry = read('#f-expiry');
-  addDraft.memo = read('#f-memo');
+  draft.name = read('#f-name');
+  draft.brand = read('#f-brand');
+  draft.expiry = read('#f-expiry');
+  draft.memo = read('#f-memo');
 }
 
 function draftHasContent() {
   return Boolean(addDraft && (addDraft.name.trim() || addDraft.brand.trim() || addDraft.expiry || addDraft.memo.trim() || addDraft.photo));
 }
 
-async function analyzeAddPhoto() {
-  if (!addDraft?.photo) return;
+async function analyzeDraftPhoto(draft) {
+  if (!draft?.photo) return;
   if (!isAndroid) {
-    addDraft.ocrState = 'unavailable';
-    addDraft.ocrMessage = '자동 읽기는 Android 앱에서 사용할 수 있어요.';
+    draft.ocrState = 'unavailable';
+    draft.ocrMessage = '자동 읽기는 Android 앱에서 사용할 수 있어요.';
     render();
     return;
   }
 
-  addDraft.ocrState = 'scanning';
-  addDraft.ocrMessage = '사진에서 상품명과 유효기간을 읽고 있어요…';
+  draft.ocrState = 'scanning';
+  draft.ocrMessage = '사진에서 상품명과 유효기간을 읽고 있어요…';
   render();
   try {
     const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('OCR_TIMEOUT')), 15000));
-    const result = await Promise.race([GiftOcr.recognize({ dataUrl: addDraft.photo }), timeout]);
+    const result = await Promise.race([GiftOcr.recognize({ dataUrl: draft.photo }), timeout]);
     const parsed = parseGiftText(result.text);
     let applied = 0;
-    if (!addDraft.name.trim() && parsed.name) { addDraft.name = parsed.name; applied += 1; }
-    if (!addDraft.brand.trim() && parsed.brand) { addDraft.brand = parsed.brand; applied += 1; }
-    if (!addDraft.expiry && parsed.expiry) { addDraft.expiry = parsed.expiry; applied += 1; }
-    if (!addDraft.categoryTouched && parsed.category !== '기타') { addDraft.category = parsed.category; applied += 1; }
-    addDraft.ocrState = applied ? 'success' : 'empty';
-    addDraft.ocrMessage = applied
+    if (!draft.name.trim() && parsed.name) { draft.name = parsed.name; applied += 1; }
+    if (!draft.brand.trim() && parsed.brand) { draft.brand = parsed.brand; applied += 1; }
+    if (!draft.expiry && parsed.expiry) { draft.expiry = parsed.expiry; applied += 1; }
+    if (!draft.categoryTouched && parsed.category !== '기타') { draft.category = parsed.category; applied += 1; }
+    draft.ocrState = applied ? 'success' : 'empty';
+    draft.ocrMessage = applied
       ? `${applied}개 항목을 자동으로 채웠어요. 저장 전에 한 번 확인해 주세요.`
       : '읽은 내용에서 채울 정보를 찾지 못했어요. 직접 입력해 주세요.';
   } catch (error) {
     console.error('OCR failed', error);
-    addDraft.ocrState = 'error';
+    draft.ocrState = 'error';
     const modelPreparing = error?.code === 'OCR_MODEL_DOWNLOADING'
       || String(error?.message || '').includes('OCR 모델을 준비 중');
-    addDraft.ocrMessage = modelPreparing
+    draft.ocrMessage = modelPreparing
       ? 'OCR 모델을 준비 중이에요. 인터넷에 연결한 상태에서 잠시 후 다시 읽어 주세요.'
       : '사진을 자동으로 읽지 못했어요. 선명한 이미지로 다시 시도해 주세요.';
   }
   render();
 }
 
-function renderAdd() {
-  const draft = ensureAddDraft();
+function renderGiftForm(draft, { title, introTitle, introCopy, submitLabel, saving, cancelAttribute }) {
   const cats = CATEGORIES;
   return `<div class="subhead-row">
-      <button class="back-btn" data-cancel-add aria-label="등록 취소">‹</button>
-      <span class="page-title" style="flex:1;">새 기프티콘</span>
-      <button class="text-btn" data-cancel-add>취소</button>
+      <button class="back-btn" ${cancelAttribute} aria-label="${escapeHtml(title)} 취소">‹</button>
+      <span class="page-title" style="flex:1;">${escapeHtml(title)}</span>
+      <button class="text-btn" ${cancelAttribute}>취소</button>
     </div>
     <div class="scroll">
       <div class="form-wrap">
-        <div class="form-intro"><strong>사진 한 장이면 더 빨라요</strong><span>상품명과 유효기간을 자동으로 찾아드려요.</span></div>
+        <div class="form-intro"><strong>${escapeHtml(introTitle)}</strong><span>${escapeHtml(introCopy)}</span></div>
         <div class="photo-card ${draft.photo ? 'has-photo' : ''}">
           <button type="button" class="photo-picker" id="photoPicker" aria-label="기프티콘 사진 선택">
           ${draft.photo ? `<img src="${draft.photo}" alt="선택한 기프티콘">` : `
@@ -617,7 +617,54 @@ function renderAdd() {
         <div class="field"><label for="f-memo">메모 <span>(선택)</span></label><textarea id="f-memo" placeholder="받은 사람이나 사용 계획을 적어두세요">${escapeHtml(draft.memo)}</textarea></div>
       </div>
     </div>
-    <div class="form-footer"><button class="primary-btn" id="saveBtn" ${addSaving ? 'disabled' : ''}>${addSaving ? '등록 중…' : '기프티콘 등록'}</button></div>`;
+    <div class="form-footer"><button class="primary-btn" id="saveBtn" ${saving ? 'disabled' : ''}>${saving ? '저장 중…' : escapeHtml(submitLabel)}</button></div>`;
+}
+
+function renderAdd() {
+  return renderGiftForm(ensureAddDraft(), {
+    title: '새 기프티콘',
+    introTitle: '사진 한 장이면 더 빨라요',
+    introCopy: '상품명과 유효기간을 자동으로 찾아드려요.',
+    submitLabel: '기프티콘 등록',
+    saving: addSaving,
+    cancelAttribute: 'data-cancel-add'
+  });
+}
+
+let editDraft = null;
+let editSaving = false;
+
+function ensureEditDraft(id) {
+  if (editDraft?.itemId === id) return editDraft;
+  const item = items.find(existing => existing.id === id);
+  if (!item) return null;
+  editDraft = {
+    itemId: item.id,
+    name: item.name || '',
+    brand: item.brand || '',
+    expiry: item.expiry || '',
+    category: item.category || CATEGORIES[0],
+    categoryTouched: true,
+    memo: item.memo || '',
+    photo: item.photo || null,
+    ocrState: 'idle',
+    ocrMessage: '',
+    error: ''
+  };
+  return editDraft;
+}
+
+function renderEdit(id) {
+  const draft = ensureEditDraft(id);
+  if (!draft) return `<div class="empty-state"><div class="e-title">항목을 찾을 수 없어요</div></div>`;
+  return renderGiftForm(draft, {
+    title: '기프티콘 정보 수정',
+    introTitle: '바뀐 정보를 확인해 주세요',
+    introCopy: '사진과 상품 정보, 유효기간을 모두 변경할 수 있어요.',
+    submitLabel: '변경사항 저장',
+    saving: editSaving,
+    cancelAttribute: 'data-cancel-edit'
+  });
 }
 
 /* ---- detail ---- */
@@ -634,7 +681,7 @@ function renderDetail(id) {
   return `<div class="detail-hero">
       <div class="detail-hero-top">
         <button class="back-btn" data-nav="home">‹</button>
-        <button class="menu-btn" id="menuBtn">⋯</button>
+        <button class="detail-edit-btn" data-nav="edit/${it.id}">수정</button>
       </div>
       <div class="detail-photo-wrap">
         <div class="detail-photo">${it.photo ? `<img src="${it.photo}" decoding="async">` : '🎁'}</div>
@@ -661,6 +708,7 @@ function renderDetail(id) {
       <div class="detail-actions">
         <button class="ghost-btn" id="restoreBtn" style="flex:1;">다시 활성화하기</button>
       </div>`}
+      <button class="detail-delete-btn" id="deleteBtn">이 기프티콘 삭제</button>
     </div>`;
 }
 
@@ -756,6 +804,65 @@ function renderSettings() {
 }
 
 /* ---------------- event handlers ---------------- */
+function attachDraftFormHandlers(draft, { cancelSelector, shouldConfirmCancel, onCancel }) {
+  app.querySelectorAll(cancelSelector).forEach(el => {
+    el.addEventListener('click', () => {
+      syncDraftFromForm(draft);
+      if (shouldConfirmCancel() && !confirm('변경 중인 내용을 지우고 나갈까요?')) return;
+      onCancel();
+    });
+  });
+  ['#f-name', '#f-brand', '#f-expiry', '#f-memo'].forEach(selector => {
+    app.querySelector(selector)?.addEventListener('input', () => {
+      syncDraftFromForm(draft);
+      draft.error = '';
+    });
+  });
+  app.querySelectorAll('.cat-chip').forEach(el => {
+    el.addEventListener('click', () => {
+      draft.category = el.getAttribute('data-cat');
+      draft.categoryTouched = true;
+      draft.error = '';
+      app.querySelectorAll('.cat-chip').forEach(chip => chip.classList.toggle('active', chip === el));
+    });
+  });
+  const choosePhoto = async () => {
+    syncDraftFromForm(draft);
+    const photo = await pickPhoto();
+    if (!photo) return;
+    draft.photo = photo;
+    draft.ocrState = isAndroid ? 'ready' : 'unavailable';
+    draft.ocrMessage = isAndroid
+      ? '원할 때 자동 입력을 눌러 상품명과 유효기간을 읽을 수 있어요.'
+      : '자동 읽기는 Android 앱에서 사용할 수 있어요.';
+    render();
+  };
+  app.querySelector('#photoPicker')?.addEventListener('click', choosePhoto);
+  app.querySelector('#replacePhoto')?.addEventListener('click', choosePhoto);
+  app.querySelector('#removePhoto')?.addEventListener('click', () => {
+    syncDraftFromForm(draft);
+    draft.photo = null;
+    draft.ocrState = 'idle';
+    draft.ocrMessage = '';
+    render();
+  });
+  app.querySelector('#runOcr')?.addEventListener('click', async () => {
+    syncDraftFromForm(draft);
+    await analyzeDraftPhoto(draft);
+  });
+}
+
+function editDraftHasChanges(draft) {
+  const item = items.find(existing => existing.id === draft?.itemId);
+  if (!item || !draft) return false;
+  return draft.name !== (item.name || '')
+    || draft.brand !== (item.brand || '')
+    || draft.expiry !== (item.expiry || '')
+    || draft.category !== (item.category || CATEGORIES[0])
+    || draft.memo !== (item.memo || '')
+    || draft.photo !== (item.photo || null);
+}
+
 function attachHandlers(routeName, arg) {
   app.querySelectorAll('[data-nav]').forEach(el => {
     el.addEventListener('click', () => {
@@ -786,57 +893,19 @@ function attachHandlers(routeName, arg) {
 
   if (routeName === 'add') {
     ensureAddDraft();
-    app.querySelectorAll('[data-cancel-add]').forEach(el => {
-      el.addEventListener('click', () => {
-        syncAddDraftFromForm();
-        if (draftHasContent() && !confirm('작성 중인 내용을 지우고 나갈까요?')) return;
+    attachDraftFormHandlers(addDraft, {
+      cancelSelector: '[data-cancel-add]',
+      shouldConfirmCancel: draftHasContent,
+      onCancel: () => {
         addDraft = null;
         addSaving = false;
         go('/home');
-      });
-    });
-    ['#f-name', '#f-brand', '#f-expiry', '#f-memo'].forEach(selector => {
-      app.querySelector(selector)?.addEventListener('input', () => {
-        syncAddDraftFromForm();
-        addDraft.error = '';
-      });
-    });
-    app.querySelectorAll('.cat-chip').forEach(el => {
-      el.addEventListener('click', () => {
-        addDraft.category = el.getAttribute('data-cat');
-        addDraft.categoryTouched = true;
-        app.querySelectorAll('.cat-chip').forEach(c => c.classList.toggle('active', c === el));
-      });
-    });
-    const choosePhoto = async () => {
-      syncAddDraftFromForm();
-      const photo = await pickPhoto();
-      if (!photo) return;
-      addDraft.photo = photo;
-      addDraft.ocrState = isAndroid ? 'ready' : 'unavailable';
-      addDraft.ocrMessage = isAndroid
-        ? '원할 때 자동 입력을 눌러 상품명과 유효기간을 읽을 수 있어요.'
-        : '자동 읽기는 Android 앱에서 사용할 수 있어요.';
-      render();
-    };
-    app.querySelector('#photoPicker')?.addEventListener('click', choosePhoto);
-    app.querySelector('#replacePhoto')?.addEventListener('click', choosePhoto);
-    const removeBtn = app.querySelector('#removePhoto');
-    if (removeBtn) removeBtn.addEventListener('click', () => {
-      syncAddDraftFromForm();
-      addDraft.photo = null;
-      addDraft.ocrState = 'idle';
-      addDraft.ocrMessage = '';
-      render();
-    });
-    app.querySelector('#runOcr')?.addEventListener('click', async () => {
-      syncAddDraftFromForm();
-      await analyzeAddPhoto();
+      }
     });
 
     app.querySelector('#saveBtn').addEventListener('click', async () => {
       if (addSaving) return;
-      syncAddDraftFromForm();
+      syncDraftFromForm(addDraft);
       const name = addDraft.name.trim();
       const expiry = addDraft.expiry;
       if (!name || !expiry) {
@@ -881,10 +950,67 @@ function attachHandlers(routeName, arg) {
     });
   }
 
+  if (routeName === 'edit') {
+    const draft = ensureEditDraft(arg);
+    if (!draft) return;
+    attachDraftFormHandlers(draft, {
+      cancelSelector: '[data-cancel-edit]',
+      shouldConfirmCancel: () => editDraftHasChanges(draft),
+      onCancel: () => {
+        editDraft = null;
+        editSaving = false;
+        go('/detail/' + arg);
+      }
+    });
+
+    app.querySelector('#saveBtn')?.addEventListener('click', async () => {
+      if (editSaving) return;
+      syncDraftFromForm(draft);
+      const name = draft.name.trim();
+      const expiry = draft.expiry;
+      if (!name || !expiry) {
+        draft.error = !name && !expiry ? '상품명과 유효기간을 입력해 주세요.' : !name ? '상품명을 입력해 주세요.' : '유효기간을 입력해 주세요.';
+        render();
+        app.querySelector(!name ? '#f-name' : '#f-expiry')?.focus();
+        return;
+      }
+
+      const item = items.find(existing => existing.id === arg);
+      if (!item) return;
+      editSaving = true;
+      const button = app.querySelector('#saveBtn');
+      if (button) { button.disabled = true; button.textContent = '저장 중…'; }
+      const previous = { ...item };
+      try {
+        Object.assign(item, {
+          name,
+          brand: draft.brand.trim(),
+          memo: draft.memo.trim(),
+          category: draft.category,
+          expiry,
+          photo: draft.photo,
+          updatedAt: Date.now()
+        });
+        saveItems(items);
+        editDraft = null;
+        editSaving = false;
+        await rescheduleAll(false);
+        go('/detail/' + arg);
+      } catch (error) {
+        Object.assign(item, previous);
+        if (!Object.hasOwn(previous, 'updatedAt')) delete item.updatedAt;
+        editSaving = false;
+        draft.error = '변경사항을 저장하지 못했어요. 저장 공간을 확인한 뒤 다시 시도해 주세요.';
+        console.error('Failed to update item', error);
+        render();
+      }
+    });
+  }
+
   if (routeName === 'detail') {
     const it = items.find(i => i.id === arg);
-    const menuBtn = app.querySelector('#menuBtn');
-    if (menuBtn) menuBtn.addEventListener('click', () => {
+    const deleteBtn = app.querySelector('#deleteBtn');
+    if (deleteBtn) deleteBtn.addEventListener('click', () => {
       if (confirm('이 기프티콘을 삭제할까요?')) {
         items = items.filter(i => i.id !== arg);
         saveItems(items);
